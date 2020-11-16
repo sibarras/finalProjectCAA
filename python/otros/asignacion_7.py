@@ -14,6 +14,10 @@ data = [
 ]
 
 df = pd.DataFrame(data, index=idx, columns=cols)
-# print(df, '\n\n')
+
+generadoras = df.loc[pd.notnull(df['generacion'])]
+
+generadoras
 
 
+np.append()
