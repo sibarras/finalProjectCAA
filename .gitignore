@@ -1,4 +1,5 @@
 .vscode/ 
 env/ 
 secret* 
-__pycache__/ 
+__pycache__/
+excel/
