@@ -1,44 +1,55 @@
 import pandas as pd
 import numpy as np
 from scipy.optimize import minimize
-from obtencion_de_datos import dataframes, demand
-from matplotlib import pyplot as plt
+from data_reader import load_cnd_data, load_demand
+from pathlib import Path
 
-df_capacidad, df_restricciones, df_termicas, df_hidros = dataframes
+main_path = Path().parent
+excel_data_path = main_path / 'excel'
 
-assert type(df_capacidad) is pd.DataFrame and type(df_restricciones) is pd.DataFrame
-assert type(df_termicas) is pd.DataFrame and type(df_hidros) is pd.DataFrame
+cnd_data_file = excel_data_path/'cnd_data.xlsx'
+demand_file = excel_data_path/'demanda.xlsx'
 
-# Para que el editor entienda el tipo de la variable
-df_capacidad:pd.DataFrame
-df_restricciones:pd.DataFrame
-df_termicas:pd.DataFrame
-df_hidros:pd.DataFrame
+cnd_data = load_cnd_data(cnd_data_file)
+demand_data = load_demand(demand_file)
+
+df_capacidad, df_restricciones, df_termicas, df_hidros = cnd_data
+
+
+# ================= Ajustar los datos obtenidos de los Archivos Excel ==========================
 
 # Eliminar plantas termicas que no tengan costo de arranque
 df_termicas = df_termicas.loc[df_termicas['.CVaria']!=0]
 
 # funciones limites dependientes de las variables
-demand:np.ndarray
-vector_demandas = demand['PANAMA'].to_numpy()*1.5
+vector_demandas:np.ndarray = demand_data.to_numpy()#*1.5
 
-# Variables para la funcion de costo
+# ================= Obtenemos las variables necesarias para el optimizador ====================
+
 cant_plantas = len(df_termicas) + len(df_hidros)
-mw_instalado_hidros = df_hidros['....Pot'].to_numpy()
 
-coste_por_mw = np.append(df_termicas['.CVaria'].to_numpy(), np.zeros(len(mw_instalado_hidros)))
+
+mw_disponible_hidros = df_hidros['....Pot'].to_numpy()
+
+
+# Se define el costo de hidros igual a cero, excepto Bayano, con un coste de 50 por ser embalse
+coste_por_mw = np.append(df_termicas['.CVaria'].to_numpy(), np.zeros(len(mw_disponible_hidros)))
 coste_por_mw[len(df_termicas)+df_hidros.loc[df_hidros['Generadoras']=='Bayano'].index] = 50
 
-coste_arranque = df_termicas['Cold Startup Cost'].replace(np.nan, 0).to_numpy()
-coste_arranque = np.append(coste_arranque, np.zeros(len(mw_instalado_hidros)))
+
+# Se considera el coste de arranque de las centrales termicas a utilizar
+coste_arranque = df_termicas['Cold Startup Cost'].replace(to_replace=np.nan, value=0).to_numpy()
+coste_arranque = np.append(coste_arranque, np.zeros(len(mw_disponible_hidros)))
 
 
 # Las variables seran los tiempos de generacion de todas las plantas y los mw de las termicas
 cant_variables = 2*len(df_termicas)+len(df_hidros)
 
+
 # Variables de los limites
 minimo_generacion = df_termicas['.Gen Min'].to_numpy().reshape(len(df_termicas),1)
 maximo_generacion = df_termicas['.Gen Max'].to_numpy().reshape(len(df_termicas),1)
+
 
 
 # ================= UTILIZANDO EL OPTIMIZADOR ==========================
@@ -50,7 +61,7 @@ def optimizar_hora(hora:int, x0:np.ndarray):
     
     # Funcion de Costo
     def funcion_de_costo(x:np.ndarray):
-        mw_operativos = np.append(x[cant_plantas:], mw_instalado_hidros)
+        mw_operativos = np.append(x[cant_plantas:], mw_disponible_hidros)
         entrada_plantas = x[:cant_plantas]
         vector_aportes = mw_operativos * coste_por_mw * entrada_plantas
         resultado = vector_aportes @ np.ones_like(vector_aportes).T
@@ -59,13 +70,13 @@ def optimizar_hora(hora:int, x0:np.ndarray):
 
     # Restricciones
     def generacion_inferior(x):
-        mw_operativos = np.append(x[cant_plantas:], mw_instalado_hidros)
+        mw_operativos = np.append(x[cant_plantas:], mw_disponible_hidros)
         res = (mw_operativos  @ x[:cant_plantas].T) - demanda_actual
         return res
     lim_generacion_inferior = {'type': 'eq', 'fun':generacion_inferior}
 
     def generacion_superior(x):
-        mw_operativos = np.append(x[cant_plantas:], mw_instalado_hidros)
+        mw_operativos = np.append(x[cant_plantas:], mw_disponible_hidros)
         res = demanda_actual*1.01 - (mw_operativos  @ x[:cant_plantas].T)
         return res
     lim_generacion_superior = {'type': 'ineq', 'fun':generacion_superior}
@@ -93,7 +104,7 @@ def optimizar_hora(hora:int, x0:np.ndarray):
 
 def formatAnswer(respuesta:np.ndarray):
     results = {}
-    respuesta = np.split(respuesta.x, [cant_plantas-len(mw_instalado_hidros), cant_plantas])
+    respuesta = np.split(respuesta.x, [cant_plantas-len(mw_disponible_hidros), cant_plantas])
     tiempo_termicas, tiempo_hidros, pot_termicas = respuesta
     nombres = np.append(df_termicas['Generadoras'].values, df_hidros['Generadoras'].values)
     n_termicas = len(tiempo_termicas)
@@ -102,8 +113,8 @@ def formatAnswer(respuesta:np.ndarray):
             results[nombres[i]] = (round(tiempo_termicas[i], 7), round(pot_termicas[i], 7), round(tiempo_termicas[i]*pot_termicas[i], 7))
             results[nombres[i]] += (round(results[nombres[i]][-1]*coste_por_mw[i] + coste_arranque[i]*(1 if results[nombres[i]][-1] > 0.001 else 0), 7),)
         else:
-            results[nombres[i]] = (round(tiempo_hidros[i-n_termicas], 7), round(mw_instalado_hidros[i-n_termicas], 7),\
-                                round(tiempo_hidros[i-n_termicas]*mw_instalado_hidros[i-n_termicas], 7))
+            results[nombres[i]] = (round(tiempo_hidros[i-n_termicas], 7), round(mw_disponible_hidros[i-n_termicas], 7),\
+                                round(tiempo_hidros[i-n_termicas]*mw_disponible_hidros[i-n_termicas], 7))
             results[nombres[i]] += (round(results[nombres[i]][-1]*coste_por_mw[i] + coste_arranque[i]*(1 if results[nombres[i]][-1] > 0.001 else 0), 7),)
     
     totales = [0 for _ in range(len(list(results.values())[0]))]
@@ -124,7 +135,7 @@ def convertir_a_excel(semana):
     #from openpyxl import Workbook
     for num, df in enumerate(semana):
         if num == 0:
-            dia = [df]
+            dia = []
         dia.append(df)
 
         if (num+1) % 24 == 0:
@@ -146,4 +157,5 @@ if __name__ == "__main__":
         semana.append(df)
 
     convertir_a_excel(semana)
+
 
